@@ -1,61 +1,62 @@
 package mscd
 
 import (
-  "github.com/conformal/btcutil"
-  _"github.com/conformal/btcwire"
-  _"github.com/conformal/btcscript"
-  "github.com/mastercoin-MSC/mscutil"
-  "log"
-  _"errors"
+	_ "errors"
+	_ "github.com/conformal/btcscript"
+	"github.com/conformal/btcutil"
+	_ "github.com/conformal/btcwire"
+	"github.com/mastercoin-MSC/mscutil"
+	"log"
 )
 
 var MastercoinBlockChannel chan *btcutil.Block
+
 func QueueMessageForBlockChannel(block *btcutil.Block) {
-  go func() {
-    MastercoinBlockChannel <- block
-  }()
+	go func() {
+		MastercoinBlockChannel <- block
+	}()
 }
 
 type MastercoinServer struct {
-  quit       chan bool
+	quit chan bool
 }
 
 func NewMastercoinServer() *MastercoinServer {
-  MastercoinBlockChannel = make(chan *btcutil.Block, 1)
+	MastercoinBlockChannel = make(chan *btcutil.Block, 1)
 
-  return &MastercoinServer{}
+	return &MastercoinServer{}
 }
 
 func (s *MastercoinServer) ProcessBlock(block *btcutil.Block) error {
-  mscutil.GetExodusTransactions(block)
+	mscutil.GetExodusTransactions(block)
 
-  return nil
+	return nil
 }
 
 func (s *MastercoinServer) Stop() {
-  s.quit <- true
+	s.quit <- true
 }
 
 // Mastercoin main loop. Takes care of listening on the maistercoin block channel
 // and calls the appropriate methods
 func MastercoinMain() {
-  // Main server instance
-  server := NewMastercoinServer()
+	// Main server instance
+	server := NewMastercoinServer()
 out:
-  for {
-    select {
-    case block := <- MastercoinBlockChannel:
-      if block.Height() == 249497 {
-        log.Panic("We got it bitch")
-      }
+	for {
+		select {
+		case block := <-MastercoinBlockChannel:
+			if block.Height() == 249497 {
+				log.Panic("We got it bitch")
+			}
 
-      //err := server.ProcessBlock(block)
-      //if err != nil {
-      //  log.Println(err)
-      //  continue
-      //}
-    case <- server.quit:
-      break out
-    }
-  }
+			//err := server.ProcessBlock(block)
+			//if err != nil {
+			//  log.Println(err)
+			//  continue
+			//}
+		case <-server.quit:
+			break out
+		}
+	}
 }
