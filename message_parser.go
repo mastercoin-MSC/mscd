@@ -2,13 +2,15 @@ package mscd
 
 import (
 	"github.com/conformal/btcutil"
+	"github.com/mastercoin-MSC/mscutil"
 	"log"
 	"time"
 )
 
 type Msg struct {
-	raw *btcutil.Tx
-	msg interface{}
+	block *btcutil.Block
+	raw   *btcutil.Tx
+	msg   interface{}
 }
 
 const (
@@ -17,7 +19,7 @@ const (
 
 type MsgParser struct {
 	// Inbound message channel
-	messageChan chan []*btcutil.Tx
+	messageChan chan *TxPack
 	// Quit indicator
 	quit chan bool
 
@@ -27,7 +29,7 @@ type MsgParser struct {
 
 func NewMsgParser() *MsgParser {
 	msgParser := &MsgParser{
-		messageChan:     make(chan []*btcutil.Tx, msgChannelSize),
+		messageChan:     make(chan *TxPack, msgChannelSize),
 		quit:            make(chan bool),
 		outboundMsgChan: make(chan *Msg, msgChannelSize),
 	}
@@ -35,35 +37,41 @@ func NewMsgParser() *MsgParser {
 	return msgParser
 }
 
-func (mp *MsgParser) QueueTransactions(txs []*btcutil.Tx) {
-	mp.messageChan <- txs
-}
-
 func (mp *MsgParser) ParseTx(tx *btcutil.Tx) *Msg {
-	// TODO
-	// 1) Type check (class A/B tx, etc)
-	// 2) Create appropriate message for the next handler
+	// Extract the type from the transaction
+	msgType := mscutil.GetType(tx)
+
+	switch msgType {
+	case mscutil.TxMsgTy:
+		tx := mscutil.MakeTx(tx)
+		log.Println(tx)
+	}
+
 	return nil
 }
 
-func (mp *MsgParser) ProcessTransactions(txs []*btcutil.Tx) {
-	//messages := make([]*Msg, len(txs))
-	for _, tx := range txs {
-		//messages[i] = mp.ParseTx(tx)
-		mp.outboundMsgChan <- mp.ParseTx(tx)
+func (mp *MsgParser) ProcessTransactions(txPack *TxPack) []*Msg {
+	messages := make([]*Msg, len(txPack.txs))
+	for i, tx := range txPack.txs {
+		messages[i] = mp.ParseTx(tx)
 	}
 
-	//return messages
+	return messages
 }
 
+func (mp *MsgParser) QueueTransactions(txPack *TxPack) {
+	mp.messageChan <- txPack
+}
+
+// Currently not in operation
 func (mp *MsgParser) transactionHandler() {
 	ticker := time.NewTicker(10 * time.Second)
 out:
 	for {
 		select {
-		case txs := <-mp.messageChan:
+		case txPack := <-mp.messageChan:
 			// Parse the transactions
-			mp.ProcessTransactions(txs)
+			mp.ProcessTransactions(txPack)
 		case <-ticker.C:
 			//log.Println("[MSGP]: PING")
 		case <-mp.quit:
@@ -73,7 +81,7 @@ out:
 }
 
 func (mp *MsgParser) Start() {
-	go mp.transactionHandler()
+	//go mp.transactionHandler()
 }
 
 func (mp *MsgParser) Stop() {

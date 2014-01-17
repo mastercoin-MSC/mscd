@@ -48,15 +48,25 @@ func NewMastercoinServer() *MastercoinServer {
 	}
 }
 
+type TxPack struct {
+	block *btcutil.Block
+	txs   []*btcutil.Tx
+}
+
 // Process block takes care of sorting out transactions with exodus output.
 // At this point it doesn't matter whether the Txs are valid or not. Validation
 // is done at the proper handlers.
 func (s *MastercoinServer) ProcessBlock(block *btcutil.Block) error {
 	// Gather transactions from this block which had an exodus output
-	txs := mscutil.GetExodusTransactions(block)
+	txPack := &TxPack{
+		txs:   mscutil.GetExodusTransactions(block),
+		block: block,
+	}
+
 	// Queue the slice of transactions for further processing by the
-	// message parser. The message will delegate to the appropriate channels
-	s.msgParser.QueueTransactions(txs)
+	// message parser.
+	messages := s.msgParser.ProcessTransactions(txPack)
+	log.Println(messages)
 
 	return nil
 }
@@ -67,9 +77,10 @@ out:
 	for {
 		select {
 		case block := <-MastercoinBlockChannel:
-			if block.Height() == ExodusBlockHeight-1 {
+			if block.Height() < ExodusBlockHeight {
 				// TODO debugging hook for exodus
 
+			} else {
 				// Block lower than exodus don't need parsing
 				break
 			}
