@@ -3,6 +3,7 @@ package mscd
 import (
 	_ "errors"
 	_ "github.com/conformal/btcscript"
+	"github.com/conformal/btcdb"
 	"github.com/conformal/btcutil"
 	_ "github.com/conformal/btcwire"
 	"github.com/mastercoin-MSC/mscutil"
@@ -34,18 +35,24 @@ type MastercoinServer struct {
 
 	// Message parser
 	msgParser *MsgParser
+
+        btcdb btcdb.Db
 }
 
-func NewMastercoinServer() *MastercoinServer {
+func NewMastercoinServer(btcdb btcdb.Db) *MastercoinServer {
+  log.Println("Creating mastercoin server")
 	MastercoinBlockChannel = make(chan *btcutil.Block, blockChannelQueueLength)
 
-	parser := NewMsgParser()
 
-	return &MastercoinServer{
+        s := &MastercoinServer{
 		quit:         make(chan bool),
 		shutdownChan: make(chan bool),
-		msgParser:    parser,
+                btcdb: btcdb,
 	}
+	parser := NewMsgParser(s)
+        s.msgParser = parser
+
+        return s
 }
 
 type TxPack struct {
@@ -73,11 +80,12 @@ func (s *MastercoinServer) ProcessBlock(block *btcutil.Block) error {
 
 // The inbound block handler
 func (s *MastercoinServer) inboundBlockHandler() {
+  log.Println("Inbound block handler started")
 out:
 	for {
 		select {
 		case block := <-MastercoinBlockChannel:
-			if block.Height() < ExodusBlockHeight {
+                          if block.Height() > ExodusBlockHeight {
 				// TODO debugging hook for exodus
 
 			} else {
@@ -116,6 +124,7 @@ func (s *MastercoinServer) Stop() {
 }
 
 func (s *MastercoinServer) Start() {
+  log.Println("Started mastercoin server")
 	// Start the message parser before the block handler input handler
 	s.msgParser.Start()
 
@@ -130,9 +139,9 @@ func (s *MastercoinServer) WaitForShutdown() {
 
 // Mastercoin main loop. Takes care of listening on the maistercoin block channel
 // and calls the appropriate methods
-func MastercoinMain() {
+func MastercoinMain(btcdb btcdb.Db) {
 	// Main server instance
-	server := NewMastercoinServer()
+	server := NewMastercoinServer(btcdb)
 
 	server.Start()
 
