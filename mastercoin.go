@@ -2,12 +2,14 @@ package mscd
 
 import (
 	_ "errors"
-	_ "github.com/conformal/btcscript"
 	"github.com/conformal/btcdb"
+	_ "github.com/conformal/btcscript"
 	"github.com/conformal/btcutil"
 	_ "github.com/conformal/btcwire"
 	"github.com/mastercoin-MSC/mscutil"
-	"log"
+	"fmt"
+	"bytes"
+	_ "encoding/gob"
 )
 
 const (
@@ -36,28 +38,65 @@ type MastercoinServer struct {
 	// Message parser
 	msgParser *MsgParser
 
-        btcdb btcdb.Db
+	btcdb btcdb.Db
 }
 
 func NewMastercoinServer(btcdb btcdb.Db) *MastercoinServer {
-  log.Println("Creating mastercoin server")
+	mscutil.Logger.Println("Creating mastercoin server")
 	MastercoinBlockChannel = make(chan *btcutil.Block, blockChannelQueueLength)
 
-
-        s := &MastercoinServer{
+	s := &MastercoinServer{
 		quit:         make(chan bool),
 		shutdownChan: make(chan bool),
-                btcdb: btcdb,
+		btcdb:        btcdb,
 	}
 	parser := NewMsgParser(s)
-        s.msgParser = parser
+	s.msgParser = parser
 
-        return s
+	return s
 }
 
 type TxPack struct {
-	block *btcutil.Block
-	txs   []*btcutil.Tx
+	time   int64
+	height int64
+	txs    []*btcutil.Tx
+}
+
+func (pack *TxPack) MarshalBinary() ([]byte, error) {
+	buff := new(bytes.Buffer)
+
+	// Length of the transactions slice so the unmarshaler can allocate a large enough slice
+	length := len(pack.txs)
+	fmt.Fprintln(buff, pack.time, pack.height, length)
+	// Write each tx
+	for _, tx := range pack.txs {
+		var data bytes.Buffer
+		tx.MsgTx().Serialize(&data)
+		buff.Write(data.Bytes())
+
+		fmt.Fprintf(buff, "\n")
+	}
+
+	return buff.Bytes(), nil
+}
+
+func (pack *TxPack) UnmarshalBinary(data []byte) error {
+	buff := bytes.NewBuffer(data)
+
+	var length int
+	_, err := fmt.Fscanln(buff, &pack.time, &pack.height, &length)
+
+	pack.txs = make([]*btcutil.Tx, length)
+	for i := 0; i < length; i++ {
+		var b []byte
+		_, err = fmt.Fscanln(buff, &b)
+		if err == nil {
+			pack.txs[i], err = btcutil.NewTxFromBytes(b)
+			fmt.Println("err from btc")
+		}
+	}
+
+	return err
 }
 
 // Process block takes care of sorting out transactions with exodus output.
@@ -66,26 +105,46 @@ type TxPack struct {
 func (s *MastercoinServer) ProcessBlock(block *btcutil.Block) error {
 	// Gather transactions from this block which had an exodus output
 	txPack := &TxPack{
-		txs:   mscutil.GetExodusTransactions(block),
-		block: block,
+		txs:    mscutil.GetExodusTransactions(block),
+		time:   block.MsgBlock().Header.Timestamp.Unix(),
+		height: block.Height(),
 	}
+	if len(txPack.txs) > 0 {
 
-	// Queue the slice of transactions for further processing by the
-	// message parser.
-	messages := s.msgParser.ProcessTransactions(txPack)
-	log.Println(messages)
+		/*
+		TODO: We want to start persisting raw data here
+		var buffer bytes.Buffer
+		enc := gob.NewEncoder(&buffer)
+		err := enc.Encode(txPack)
+		if err != nil {
+			mscutil.Logger.Fatal(err)
+		}
+
+		dec := gob.NewDecoder(&buffer)
+		var pack TxPack
+		err = dec.Decode(&pack)
+		if err != nil {
+			mscutil.Logger.Fatal(err)
+		}
+		*/
+
+		// Queue the slice of transactions for further processing by the
+		// message parser.
+		_ = s.msgParser.ProcessTransactions(txPack)
+		// mscutil.Logger.Println(messages)
+	}
 
 	return nil
 }
 
 // The inbound block handler
 func (s *MastercoinServer) inboundBlockHandler() {
-  log.Println("Inbound block handler started")
+	mscutil.Logger.Println("Inbound block handler started")
 out:
 	for {
 		select {
 		case block := <-MastercoinBlockChannel:
-                          if block.Height() > ExodusBlockHeight {
+			if block.Height() > ExodusBlockHeight {
 				// TODO debugging hook for exodus
 
 			} else {
@@ -96,7 +155,7 @@ out:
 			// Process the current block, check for Msc Txs
 			err := s.ProcessBlock(block)
 			if err != nil {
-				log.Println(err)
+				mscutil.Logger.Println(err)
 				continue
 			}
 		case <-s.quit:
@@ -120,11 +179,11 @@ func (s *MastercoinServer) Stop() {
 	// Close the channel and invoking the channel
 	close(s.quit)
 
-	log.Println("[SERV]: Stopped successfull")
+	mscutil.Logger.Println("Stopped successfull")
 }
 
 func (s *MastercoinServer) Start() {
-  log.Println("Started mastercoin server")
+	mscutil.Logger.Println("Started mastercoin server")
 	// Start the message parser before the block handler input handler
 	s.msgParser.Start()
 

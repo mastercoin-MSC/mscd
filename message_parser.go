@@ -4,9 +4,8 @@ import (
 	"github.com/conformal/btcscript"
 	"github.com/conformal/btcutil"
 	"github.com/mastercoin-MSC/mscutil"
-
-	"log"
 	"time"
+	"bytes"
 )
 
 // Bitcoin specific type checking
@@ -73,84 +72,67 @@ func NewMsgParser(server *MastercoinServer) *MsgParser {
 // the proper object which. After a full Msg has been assembled it will return the Msg
 // or an error with a description. Whoever called this function should delegate the msg
 // to the proper object handler.
-func (mp *MsgParser) ParseTx(tx *btcutil.Tx, block *btcutil.Block) (msg *Msg, err error) {
+func (mp *MsgParser) ParseTx(tx *btcutil.Tx, height, time int64) (msg *Msg, err error) {
+	sender,_ := mscutil.FindSender(tx.MsgTx().TxIn, mp.server.btcdb)
 
 	// Check if this is a Class A transaction
 	if isClassA(tx) {
-		log.Println("Got 'Class A' tx")
+		mscutil.Logger.Println("Got 'Class A' transaction with hash", tx.Sha())
+
+		highestAddress, _ := mscutil.FindSender(tx.MsgTx().TxIn, mp.server.btcdb)
 
 		// Create a simple send transaction
-		simpleSend, err := mscutil.MakeClassASimpleSend(mscutil.GetAddrsClassA(tx))
+		simpleSend, e := mscutil.MakeClassASimpleSend(highestAddress, mscutil.GetAddrsClassA(tx))
+		err = e
 
 		if simpleSend != nil {
-			log.Println("Got Simple Send transaction")
+			mscutil.Logger.Println("Decoded Simple Send transaction:", simpleSend, simpleSend.Data)
 			msg = &Msg{msg: simpleSend}
+			mscutil.Logger.Fatal("SHUTDOWN")
 		}
 	} else {
-		log.Println("Got 'Class B' tx")
+		mscutil.Logger.Println("Got 'Class B' tx")
 
 		// Parse addresses from the tx using class B rules
-		out := mscutil.GetAddrsClassB(tx)
-		// Receiver is first, data is second in the slice
-		data := out[1]
-		// Figure out the message type
-		msgType := GetTypeFromAddress(data)
-		switch msgType {
-		case TxMsgTy:
-			simpleSend, err := mscutil.MakeClassBSimpleSend(out)
-		case DexMsgTy:
-		default:
-			log.Println("Unknown message type %d. FIXME or erroneus.\n", int(msgType))
+		plainTextKeys, receiver, err := mscutil.GetAddrsClassB(tx, sender)
+		if err == nil {
+			// Receiver is first, data is second in the slice
+			data := plainTextKeys[0][1]
+			// Figure out the message type
+			msgType := mscutil.GetTypeFromAddress(string(data))
+			switch msgType {
+			case mscutil.TxMsgTy:
+				simpleSend, e := mscutil.MakeClassBSimpleSend(plainTextKeys, receiver)
+				err = e
+
+				if simpleSend != nil {
+					mscutil.Logger.Println("Got simple send class b transaction")
+					msg = &Msg{msg: simpleSend}
+				}
+			case mscutil.DexMsgTy:
+			default:
+				mscutil.Logger.Println("Unknown message type %d. FIXME or erroneus.\n", int(msgType))
+			}
 		}
 	}
 
 	// If nothing has been found it is either a Exodus Kickstarter / Payment for accept DEx message.
 	if msg == nil && err != nil {
 
-		if block.Height() <= mscutil.FundraiserEndBlock {
-
-			inputs := make(map[string]int64)
-
+		if height <= mscutil.FundraiserEndBlock {
 			// Collect the addresses and values for every input used for this transaction
-			for _, txIn := range tx.MsgTx().TxIn {
-
-				op := txIn.PreviousOutpoint
-				hash := op.Hash
-				index := op.Index
-				transactions, err := mp.server.btcdb.FetchTxBySha(&hash)
-				if err != nil {
-					return nil, err
-				}
-
-				previousOutput := transactions[0].Tx.TxOut[index]
-
-				// The largest contributor receives the Mastercoins, so add multiple address values together
-				address, _ := mscutil.GetAddrs(previousOutput.PkScript)
-				inputs[address[0]] += previousOutput.Value
-			}
-
-			log.Println("inputs:", inputs)
-
-			// Decide which input has the most value so we know who 'won' this fundraiser transaction
-			var highest int64
-			var highestAddress string
-
-			for k, v := range inputs {
-				if v > highest {
-					highest = v
-					highestAddress = k
-				}
-			}
+			highestAddress, _ := mscutil.FindSender(tx.MsgTx().TxIn, mp.server.btcdb)
 
 			var totalSpend int64
 			for _, txOut := range tx.MsgTx().TxOut {
-				totalSpend += txOut.Value
+				addr, _ := mscutil.GetAddrs(txOut.PkScript)
+				if addr[0].Addr == mscutil.ExodusAddress {
+					totalSpend += txOut.Value
+				}
 			}
 
-			log.Println("Calcualted total spend:", totalSpend)
-
-			fundraiserTx, err := mscutil.NewFundraiserTransaction(highestAddress, totalSpend, block.MsgBlock().Header.Timestamp.Unix())
-			e = err
+			fundraiserTx, e := mscutil.NewFundraiserTransaction(highestAddress, totalSpend, time)
+			err = e
 
 			msg = &Msg{msg: fundraiserTx}
 		} else {
@@ -165,13 +147,14 @@ func (mp *MsgParser) ProcessTransactions(txPack *TxPack) []*Msg {
 	messages := make([]*Msg, len(txPack.txs))
 
 	for _, tx := range txPack.txs {
-		// TODO check if the txs exists in db otherwise skip (it might have happened that only a part of the block has been processed due to power failure)
-		msg, err := mp.ParseTx(tx, txPack.block)
-		if err != nil {
-			log.Println(err)
-		}
+		buff := new(bytes.Buffer)
+		tx.MsgTx().Serialize(buff)
 
-		log.Panic("DAAAMN SON")
+		// TODO check if the txs exists in db otherwise skip (it might have happened that only a part of the block has been processed due to power failure)
+		msg, err := mp.ParseTx(tx, txPack.height, txPack.time)
+		if err != nil {
+			mscutil.Logger.Println(err)
+		}
 
 		switch msg.msg.(type) {
 		case mscutil.SimpleTransaction:
@@ -199,7 +182,7 @@ out:
 			// Parse the transactions
 			mp.ProcessTransactions(txPack)
 		case <-ticker.C:
-			//log.Println("[MSGP]: PING")
+			//mscutil.Logger.Println("[MSGP]: PING")
 		case <-mp.quit:
 			break out
 		}
@@ -211,5 +194,5 @@ func (mp *MsgParser) Start() {
 }
 
 func (mp *MsgParser) Stop() {
-	log.Println("[MSP]: Shutdown")
+	mscutil.Logger.Println("[MSP]: Shutdown")
 }
