@@ -216,6 +216,7 @@ func (mp *MsgParser) ProcessTransactions(txPack *mscutil.TxPack) []*Msg {
 		buff := new(bytes.Buffer)
 		tx.MsgTx().Serialize(buff)
 
+		mscutil.Logger.Println("Parsing transaction:", tx.Sha())
 		msgs, err := mp.ParseTx(tx, txPack.Height, txPack.Time)
 
 		for _, msg := range msgs {
