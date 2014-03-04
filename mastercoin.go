@@ -9,6 +9,7 @@ import (
 	"github.com/conformal/btcutil"
 	_ "github.com/conformal/btcwire"
 	"github.com/mastercoin-MSC/mscutil"
+	"github.com/mastercoin-MSC/mscrpc"
 	_"fmt"
 	"os"
 	"os/user"
@@ -41,6 +42,9 @@ type MastercoinServer struct {
 	// Message parser
 	msgParser *MsgParser
 
+	// Rpc server
+	rpcServ mscrpc.RpcServer
+
 	btcdb btcdb.Db
 
 	db *mscutil.LDBDatabase
@@ -65,6 +69,7 @@ func NewMastercoinServer(btcdb btcdb.Db) *MastercoinServer {
 		shutdownChan: make(chan bool),
 		btcdb:        btcdb,
 		db: db,
+		rpcServ:      mscrpc.NewJsonRpcServer(),
 		FundraiserHandler: &FundraiserHandler{db: bDb},
 		SimpleSendHandler: &SimpleSendHandler{db: bDb},
 	}
@@ -161,6 +166,8 @@ func (s *MastercoinServer) Start(playback bool) {
 	mscutil.Logger.Println("Started mastercoin server")
 	// Start the message parser before the block handler input handler
 	s.msgParser.Start()
+	// Start up the rpc server
+	go s.rpcServ.Start()
 
 	if playback{
 		mscutil.Logger.Println("Starting playback")
